@@ -27,7 +27,7 @@ use embassy_sync::mutex::Mutex;
 use helper_functions::*;
 use panic_probe as _;
 
-const DEBUG_DURING_SLEEP: bool = true;
+const DEBUG_DURING_SLEEP: bool = false;
 
 pub const READ_EEPROM_ADDR: u16 = 0;
 pub const READ_FLASH_ADDR: i32 = 0;
@@ -172,7 +172,7 @@ async fn main(_spawner: Spawner) {
     flex_pd8.set_as_analog();
     let _gpio_ph3 = Output::new(p.PH3, Level::Low, Speed::Low);
 
-    let _power_rail = Output::new(p.PB15, Level::Low, Speed::Low);
+    let mut power_rail = Output::new(p.PB15, Level::Low, Speed::Low);
 
     let mut spi_config = SpiConfig::default();
     spi_config.frequency = time::mhz(1);
@@ -180,10 +180,8 @@ async fn main(_spawner: Spawner) {
     let mut buf = [0u8; 16];
 
     loop {
-        // The bus only needs to be shared for the duration of this iteration, so it's
-        // a plain local Mutex (not a StaticCell) built fresh from reborrowed peripherals
-        // each time around - that's what lets SPI1/pins/DMA channels be reborrowed here
-        // instead of requiring a single 'static init outside the loop.
+        power_rail.set_high(); // increasing board current consumption to provide visual feedback
+
         let spi = Spi::new(
             p.SPI1.reborrow(),
             p.PB4.reborrow(), // SCK
@@ -227,11 +225,9 @@ async fn main(_spawner: Spawner) {
         let _gpio_pe1 = Output::new(p.PE1.reborrow(), Level::High, Speed::VeryHigh);
         let _gpio_pe3 = Output::new(p.PE3.reborrow(), Level::High, Speed::VeryHigh);
 
-        GPDMA1_CHANNEL3::unpend();
-        GPDMA1_CHANNEL4::unpend();
-
-        check_enabled_clocks();
-
+        // check_enabled_clocks();
+        power_rail.set_low();
+        info!("sleeping for 5s ...");
         Timer::after_millis(5000).await;
     }
 }
