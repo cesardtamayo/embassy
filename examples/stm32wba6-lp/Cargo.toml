@@ -13,7 +13,10 @@ embassy-executor = { version = "0.10.0", path = "../../embassy-executor", featur
 embassy-embedded-hal = { version = "0.6.0", path = "../../embassy-embedded-hal" }
 embassy-time = { version = "0.5.1", path = "../../embassy-time", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
 embassy-futures = { version = "0.1.2", path = "../../embassy-futures"}
+embedded-hal-async = "1.0.0"
 bq27441 = {version = "0.1", default-features = false, features = ["embassy"]}
+cat25040 = {version = "0.1.2", default-features = false}
+is25lp128f = {version = "0.1", default-features = false, features = ["embedded-storage"]}
 
 defmt = "1.0.1"
 defmt-rtt = "1.1.0"
