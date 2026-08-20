@@ -16,7 +16,7 @@ use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use embassy_stm32::peripherals::{USB_OTG_HS as UsbOtgHs};
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select3, Either3};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{
     bind_interrupts,
@@ -188,53 +188,74 @@ async fn main(_spawner: Spawner) {
         bulk_rw,
     );
 
+    let mut task_state = TaskState::SLEEP;
+
     loop {
-        let usb_fut = usb_device.run();
-        let cli_fut = async {
-            info!("USB: waiting for connections");
-            api_handler.serial.wait_connection().await;
-            loop {
-                info!("usb: connected - waiting for commands ...");
-                match api_handler.receive().await {
-                    Ok(true) => {
-                        info!("usb: received {} bytes", api_handler.get_rec_len());
+        match task_state {
+            TaskState::PRESLEEP => {
+                task_state = TaskState::SLEEP;
+                info!("usb: sleep");
+            }
+            TaskState::SLEEP => {
+                if vbus_sns.is_high() {
+                    info!("vbus high detected");
+                    task_state = TaskState::PREAWAKE; // boot with USB-C connected
+                } else {
+                    vbus_sns.wait_for_rising_edge().await;
+                    info!("vbus rising edge detected");
+                    task_state = TaskState::PREAWAKE;
+                }
+            }
+            TaskState::PREAWAKE => {
+                task_state = TaskState::AWAKE;
+                info!("usb: awake");
+            }
+            TaskState::AWAKE => {
+                let usb_fut = usb_device.run();
+                let cli_fut = async {
+                    info!("USB: waiting for connections");
+                    api_handler.serial.wait_connection().await;
+                    loop {
+                        info!("usb: connected - waiting for commands ...");
+                        match api_handler.receive().await {
+                            Ok(true) => {
+                                info!("usb: received {} bytes", api_handler.get_rec_len());
+                            }
+                            Ok(false) => {
+                                info!("Command not ready or invalid");
+                            }
+                            Err(UsbIoError::Disconnected) => {
+                                warn!("USB disconnected - pausing handler");
+                                break;
+                            }
+                            Err(e) => {
+                                error!("Receive error: {:?}", e);
+                                break;
+                            }
+                        }
                     }
-                    Ok(false) => {
-                        info!("Command not ready or invalid");
+                    // info!("USB: done receiving");
+                };
+                let vbus_fut = vbus_sns.wait_for_falling_edge();
+
+                match select3(usb_fut, cli_fut, vbus_fut).await {
+                    Either3::First(_) => {
+                        warn!("USB device task exited unexpectedly, resetting USB stack...");
+                        usb_device.disable().await;
+                        Timer::after(Duration::from_millis(1000)).await;
                     }
-                    Err(UsbIoError::Disconnected) => {
-                        warn!("USB disconnected - pausing handler");
-                        break;
+                    Either3::Second(_) => {
+                        usb_device.disable().await;
+                        // cli_fut ended because USB disconnected; loop back and wait for reconnection.
                     }
-                    Err(e) => {
-                        error!("Receive error: {:?}", e);
-                        break;
+                    Either3::Third(_) => {
+                        info!("vbus falling edge detected");
+                        task_state = TaskState::PRESLEEP;
+                        // Timer::after(Duration::from_millis(1000)).await;
                     }
                 }
             }
-            // info!("USB: done receiving");
-        };
-        // let vbus_fut = vbus_sns.wait_for_any_edge();
-
-        match select(usb_fut, cli_fut).await {
-            Either::First(_) => {
-                warn!("USB device task exited unexpectedly, resetting USB stack...");
-                usb_device.disable().await;
-                Timer::after(Duration::from_millis(1000)).await;
-            }
-            Either::Second(_) => {
-                usb_device.disable().await;
-                // cli_fut ended because USB disconnected; loop back and wait for reconnection.
-            }
-            // Either3::Third(_) => {
-            //     info!("vbus edge detected");
-            //     // if vbus_sns.is_high() {
-            //     //     info!("vbus high");
-            //     // }else{
-            //     //     info!("vbus low");
-            //     // }
-            //     Timer::after(Duration::from_millis(1000)).await;
-            // }
         }
+
     }
 }
