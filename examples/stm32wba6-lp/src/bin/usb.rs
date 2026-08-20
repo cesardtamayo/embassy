@@ -124,7 +124,7 @@ async fn main(_spawner: Spawner) {
 
     /// USB ./...
     let mut drv_cfg = embassy_stm32::usb::Config::default();
-    drv_cfg.vbus_detection = false; // TODO: Make true later, we are battery powered
+    drv_cfg.vbus_detection = true; // TODO: Make true later, we are battery powered
 
     let usb_driver = Stm32UsbDriver::new_hs(
         p.USB_OTG_HS,
@@ -193,15 +193,14 @@ async fn main(_spawner: Spawner) {
         let cli_fut = async {
             info!("USB: waiting for connections");
             api_handler.serial.wait_connection().await;
-            info!("USB connected - starting API handler over bulk!");
             loop {
+                info!("usb: connected - waiting for commands ...");
                 match api_handler.receive().await {
                     Ok(true) => {
                         info!("usb: received {} bytes", api_handler.get_rec_len());
                     }
                     Ok(false) => {
-                        // Command not ready or invalid, continue receiving
-                        continue;
+                        info!("Command not ready or invalid");
                     }
                     Err(UsbIoError::Disconnected) => {
                         warn!("USB disconnected - pausing handler");
@@ -209,11 +208,13 @@ async fn main(_spawner: Spawner) {
                     }
                     Err(e) => {
                         error!("Receive error: {:?}", e);
-                        Timer::after(Duration::from_millis(500)).await;
+                        break;
                     }
                 }
             }
+            // info!("USB: done receiving");
         };
+        // let vbus_fut = vbus_sns.wait_for_any_edge();
 
         match select(usb_fut, cli_fut).await {
             Either::First(_) => {
@@ -222,8 +223,18 @@ async fn main(_spawner: Spawner) {
                 Timer::after(Duration::from_millis(1000)).await;
             }
             Either::Second(_) => {
+                usb_device.disable().await;
                 // cli_fut ended because USB disconnected; loop back and wait for reconnection.
             }
+            // Either3::Third(_) => {
+            //     info!("vbus edge detected");
+            //     // if vbus_sns.is_high() {
+            //     //     info!("vbus high");
+            //     // }else{
+            //     //     info!("vbus low");
+            //     // }
+            //     Timer::after(Duration::from_millis(1000)).await;
+            // }
         }
     }
 }
