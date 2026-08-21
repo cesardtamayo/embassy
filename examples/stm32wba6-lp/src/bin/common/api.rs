@@ -83,7 +83,6 @@ const LOGS_READ_BUF_SIZE: usize = 8192;
 // }
 
 // static COMMAND: StaticCell<Command> = StaticCell::new();
-static CMD_BUF: StaticCell<[u8; 128]> = StaticCell::new();
 // static RSP_BUF: StaticCell<[u8; RSP_BUF_SIZE]> = StaticCell::new();
 
 // static LOGS_READ_REPLY: StaticCell<Signal<CriticalSectionRawMutex, LogReadRsp>> = StaticCell::new();
@@ -93,14 +92,14 @@ static CMD_BUF: StaticCell<[u8; 128]> = StaticCell::new();
 //     StaticCell::new();
 // static LOGS_READ_BUF: StaticCell<[u8; LOGS_READ_BUF_SIZE]> = StaticCell::new();
 
-pub struct ApiHandler<S>
+pub struct ApiHandler<'a, S>
 where
     S: Read + Write + Unpin,
 {
     pub serial: S,
     // on_chip_flash: &'a mut Flash<'static, Blocking>, // TODO: Remove ownership
     // hv_api_mutex: &'static Mutex<CriticalSectionRawMutex, HvApiHandler>,
-    cmd_buf: &'static mut [u8; 128],
+    cmd_buf: &'a mut [u8; 128],
     rec_len: usize,
     rec_stale: Instant,
     // rsp_buf: &'static mut [u8; RSP_BUF_SIZE],
@@ -131,13 +130,14 @@ where
     // weapon_state_publisher: &'a WeaponStateChannelPublisher,
 }
 
-impl<S> ApiHandler<S>
+impl<'a, S> ApiHandler<'a, S>
 where
     S: Read + Write + Unpin + embedded_io_async::ErrorType<Error = UsbIoError>,
     <S as embedded_io_async::ErrorType>::Error: defmt::Format,
 {
     pub fn new(
         serial: S,
+        cmd_buf: &'a mut [u8; 128],
         // on_chip_flash: &'a mut Flash<'static, Blocking>,
         // hv_api_mutex: &'static Mutex<CriticalSectionRawMutex, HvApiHandler>,
         // cli_event_publisher: &'a CliEventChannelPublisher,
@@ -164,7 +164,7 @@ where
             serial,
             // on_chip_flash,
             // hv_api_mutex,
-            cmd_buf: CMD_BUF.init([0u8; 128]),
+            cmd_buf,
             rec_len: 0,
             rec_stale: Instant::now(),
             // rsp_buf: RSP_BUF.init([0u8; RSP_BUF_SIZE]),
