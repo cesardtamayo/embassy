@@ -39,7 +39,7 @@ use api::*;
 
 use panic_probe as _;
 
-const DEBUG_DURING_SLEEP: bool = true;
+const DEBUG_DURING_SLEEP: bool = false;
 
 pub const VID: u16 = 0x1993;
 pub const PID: u16 = 0xBEEF;
@@ -51,6 +51,13 @@ bind_interrupts!(pub struct Irqs {
     USB_OTG_HS => usb::InterruptHandler<UsbOtgHs>;
     EXTI9 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI9>;
 });
+
+pub enum TaskState {
+    PRESLEEP,
+    SLEEP,
+    PREAWAKE,
+    AWAKE,
+}
 
 #[embassy_executor::main(executor = "embassy_stm32::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
@@ -189,54 +196,111 @@ async fn main(_spawner: Spawner) {
         cmd_buf,
     );
 
+    let mut task_state = TaskState::SLEEP;
+
     loop {
-        let usb_fut = usb_device.run();
-        let cli_fut = async {
-            info!("USB: waiting for connections");
-            api_handler.serial.wait_connection().await;
-            loop {
-                info!("usb: receiving commands ...");
-                match api_handler.receive().await {
-                    Ok(true) => {
-                        info!("usb: received {} bytes", api_handler.get_rec_len());
+        match task_state {
+            TaskState::PRESLEEP => task_state = TaskState::SLEEP,
+            TaskState::SLEEP => {
+            // TODO: add "USB connected at boot" case
+                vbus_sns.wait_for_rising_edge().await;
+                info!("VBUS rising edge detected!!");
+                task_state = TaskState::PREAWAKE;
+            }
+            TaskState::PREAWAKE => task_state = TaskState::AWAKE,
+            TaskState::AWAKE => {
+                let usb_fut = usb_device.run();
+                let cli_fut = async {
+                    info!("USB: waiting for connections");
+                    api_handler.serial.wait_connection().await;
+                    loop {
+                        info!("usb: receiving commands ...");
+                        match api_handler.receive().await {
+                            Ok(true) => {
+                                info!("usb: received {} bytes", api_handler.get_rec_len());
+                            }
+                            Ok(false) => {
+                                info!("Command not ready or invalid");
+                            }
+                            Err(UsbIoError::Disconnected) => {
+                                warn!("USB disconnected - pausing handler");
+                                break;
+                            }
+                            Err(e) => {
+                                error!("Receive error: {:?}", e);
+                                break;
+                            }
+                        }
                     }
-                    Ok(false) => {
-                        info!("Command not ready or invalid");
+                    info!("USB: done receiving");
+                };
+
+                match select(usb_fut, cli_fut).await {
+                    Either::First(_) => {
+                        warn!("USB device task exited unexpectedly, resetting USB stack...");
+                        usb_device.disable().await;
+                        task_state = TaskState::PRESLEEP;
+                        // Timer::after(Duration::from_millis(3000)).await;
                     }
-                    Err(UsbIoError::Disconnected) => {
-                        warn!("USB disconnected - pausing handler");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Receive error: {:?}", e);
-                        break;
+                    Either::Second(_) => {
+                        warn!("USB disconnected, waiting for new connection...");
+                        usb_device.disable().await;
+                        task_state = TaskState::PRESLEEP;
+                        // Timer::after(Duration::from_millis(3000)).await;
                     }
                 }
             }
-            info!("USB: done receiving");
-        };
-
-        match select(usb_fut, cli_fut).await {
-            Either::First(_) => {
-                warn!("USB device task exited unexpectedly, resetting USB stack...");
-                usb_device.disable().await;
-                Timer::after(Duration::from_millis(3000)).await;
-            }
-            Either::Second(_) => {
-                warn!("USB disconnected, waiting for new connection...");
-                usb_device.disable().await;
-                Timer::after(Duration::from_millis(3000)).await;
-            }
         }
-        // task_state = TaskState::PRESLEEP;
-        // info!("disabling usb_device");
-        // usb_device.disable().await;
-        // info!("dropping usb_device");
-        // drop(usb_device);`
-        // info!("resetting endpoint allocations");
-        // SAFETY: usb_device (and everything derived from usb_builder/
-        // usb_driver) was just dropped above, so no Endpoint/Bus/
-        // Driver referencing this peripheral's state is still alive.
-        // unsafe { embassy_stm32::usb::reset_endpoint_allocations::<UsbOtgHs>() };
     }
 }
+
+    // loop {
+    //     let usb_fut = usb_device.run();
+    //     let cli_fut = async {
+    //         info!("USB: waiting for connections");
+    //         api_handler.serial.wait_connection().await;
+    //         loop {
+    //             info!("usb: receiving commands ...");
+    //             match api_handler.receive().await {
+    //                 Ok(true) => {
+    //                     info!("usb: received {} bytes", api_handler.get_rec_len());
+    //                 }
+    //                 Ok(false) => {
+    //                     info!("Command not ready or invalid");
+    //                 }
+    //                 Err(UsbIoError::Disconnected) => {
+    //                     warn!("USB disconnected - pausing handler");
+    //                     break;
+    //                 }
+    //                 Err(e) => {
+    //                     error!("Receive error: {:?}", e);
+    //                     break;
+    //                 }
+    //             }
+    //         }
+    //         info!("USB: done receiving");
+    //     };
+
+    //     match select(usb_fut, cli_fut).await {
+    //         Either::First(_) => {
+    //             warn!("USB device task exited unexpectedly, resetting USB stack...");
+    //             usb_device.disable().await;
+    //             Timer::after(Duration::from_millis(3000)).await;
+    //         }
+    //         Either::Second(_) => {
+    //             warn!("USB disconnected, waiting for new connection...");
+    //             usb_device.disable().await;
+    //             Timer::after(Duration::from_millis(3000)).await;
+    //         }
+    //     }
+    //     // task_state = TaskState::PRESLEEP;
+    //     // info!("disabling usb_device");
+    //     // usb_device.disable().await;
+    //     // info!("dropping usb_device");
+    //     // drop(usb_device);`
+    //     // info!("resetting endpoint allocations");
+    //     // SAFETY: usb_device (and everything derived from usb_builder/
+    //     // usb_driver) was just dropped above, so no Endpoint/Bus/
+    //     // Driver referencing this peripheral's state is still alive.
+    //     // unsafe { embassy_stm32::usb::reset_endpoint_allocations::<UsbOtgHs>() };
+    // }
