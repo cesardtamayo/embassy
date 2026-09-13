@@ -435,7 +435,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                 }
             }
             Event::Resume => {
-                trace!("usb: resume");
+                debug!("usb: resume");
                 self.suspended = false;
                 for h in &mut self.handlers {
                     h.suspended(false);
